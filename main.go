@@ -49,16 +49,22 @@ func main() {
 				logrus.Infof("execute %v", c.Command.Name)
 
 				client := gitlab.NewClient(nil, c.GlobalString(flagToken))
-				client.SetBaseURL(c.GlobalString(flagURL))
+				if err = client.SetBaseURL(c.GlobalString(flagURL)); err != nil {
+					return
+				}
 
 				var group *gitlab.Group
 				if group, _, err = client.Groups.GetGroup(c.String(flagGroup)); err == nil {
 					var file *os.File
 					if file, err = os.Create(c.String(flagTarget)); err == nil {
-						defer file.Close()
+						defer func() {
+							err = file.Close()
+							return
+						}()
 						w := bufio.NewWriter(file)
-						generateScriptTo(w, group, make(map[int]bool, 0), client)
-						w.Flush()
+						if err = generateScriptTo(w, group, make(map[int]bool, 0), client); err == nil {
+							err = w.Flush()
+						}
 					}
 				}
 				return
@@ -71,22 +77,34 @@ func main() {
 	}
 }
 
-func generateScriptTo(writer *bufio.Writer, group *gitlab.Group, alreadyHandledGroupIds map[int]bool, client *gitlab.Client) {
+func generateScriptTo(writer *bufio.Writer, group *gitlab.Group, alreadyHandledGroupIds map[int]bool, client *gitlab.Client) (err error) {
 	alreadyHandledGroupIds[group.ID] = true
 
-	writer.WriteString(fmt.Sprintf("\nmkdir \"%v\"\n", group.Path))
-	writer.WriteString(fmt.Sprintf("cd \"%v\"\n", group.Path))
+	if _, err = writer.WriteString(fmt.Sprintf("\nmkdir \"%v\"\n", group.Path)); err != nil {
+		return
+	}
+	if _, err = writer.WriteString(fmt.Sprintf("cd \"%v\"\n", group.Path)); err != nil {
+		return
+	}
+
 	for _, project := range group.Projects {
-		writer.WriteString(fmt.Sprintf("git clone %v\n", project.HTTPURLToRepo))
+		if _, err = writer.WriteString(fmt.Sprintf("git clone %v\n", project.HTTPURLToRepo)); err != nil {
+			return
+		}
 		for _, sharedGroup := range project.SharedWithGroups {
 			if !alreadyHandledGroupIds[sharedGroup.GroupID] {
 				if group, _, err := client.Groups.GetGroup(sharedGroup.GroupID); err == nil {
-					generateScriptTo(writer, group, alreadyHandledGroupIds, client)
+					if err = generateScriptTo(writer, group, alreadyHandledGroupIds, client); err != nil {
+						return
+					}
 				} else {
 					logrus.Warn(err)
 				}
 			}
 		}
 	}
-	writer.WriteString("cd ..\n")
+	if _, err = writer.WriteString("cd ..\n"); err != nil {
+		return
+	}
+	return
 }
